@@ -423,6 +423,38 @@ function renderInfoBar(){
     <span class="info-item">Dernière synchronisation : ${lastSync}</span>
   </div>`;
 }
+function renderUpgradePage(){
+  const t = STATE.tenant;
+  return `<div class="page-header"><div><div class="eyebrow">Abonnement</div><h1>⚡ Passer au plan supérieur</h1><p>Choisissez le plan qui correspond à vos besoins</p></div></div>
+  ${STATE.upgradeMessage ? `<div class="panel"><p style="margin:0; font-size:14px;">${STATE.upgradeMessage}</p></div>` : ''}
+  <div class="settings-grid">
+    <div class="panel" style="${t.plan!=='pro'?'border-color:var(--signal);':''}">
+      <h3>Basique ${t.plan!=='pro'?'· Votre plan actuel':''}</h3>
+      <ul style="padding-left:18px; font-size:13.5px; color:var(--text-dim); line-height:1.9;">
+        <li>Profils et tickets illimités en création</li>
+        <li>Tableau de bord et historique des ventes</li>
+        <li>Portail de connexion WiFi personnalisé</li>
+        <li>Impression de tickets</li>
+        <li>Support par email</li>
+      </ul>
+    </div>
+    <div class="panel" style="border-color:var(--signal);">
+      <h3>Pro ${t.plan==='pro'?'· Votre plan actuel':''} <span class="badge badge-dispo">Recommandé</span></h3>
+      <ul style="padding-left:18px; font-size:13.5px; color:var(--text-dim); line-height:1.9;">
+        <li>Tout ce qui est inclus dans Basique</li>
+        <li><strong style="color:var(--text);">Mode accès distant</strong> — gérez votre boutique de partout</li>
+        <li><strong style="color:var(--text);">Verrouillage MAC</strong> renforcé sur vos profils</li>
+        <li>Limite de profils augmentée ou illimitée</li>
+        <li>Support prioritaire</li>
+      </ul>
+    </div>
+  </div>
+  ${renderPaymentPanel()}
+  <div class="panel" style="margin-top:22px;">
+    <button class="btn btn-ghost" id="back-from-upgrade" style="width:auto;">← Retour au tableau de bord</button>
+  </div>`;
+}
+
 function renderShell(){
   const nav = [
     {id:'dashboard', label:'Tableau de bord', icon:ICONS.dashboard},
@@ -450,6 +482,7 @@ function renderShell(){
       ${renderInfoBar()}
       ${!subOk ? `<div class="error-msg">Votre période d'essai est terminée. Contactez-nous pour continuer à utiliser SID Ticket.</div>` : ''}
       ${CUR_VIEW==='dashboard'?renderDashboard():''}
+      ${CUR_VIEW==='upgrade'?renderUpgradePage():''}
       ${CUR_VIEW==='profiles'?renderProfiles():''}
       ${CUR_VIEW==='tickets'?renderTickets():''}
       ${CUR_VIEW==='router'?renderRouter():''}
@@ -643,23 +676,14 @@ function renderTickets(){
 }
 function printTickets(list){
   if(list.length===0){ toast('Aucun ticket à imprimer.', 'error'); return; }
-  const portalBase = STATE.config.router.loginUrl || `${location.origin}/portal/${STATE.tenant.slug}`;
   const area = document.getElementById('print-area');
   area.innerHTML = `<div class="p-grid">${list.map(t=>{
     const parts = [fmtDurationCompact(t.activeTimeMs), fmtBytesCompact(t.dataLimitBytes)].filter(Boolean);
-    const connectUrl = `${portalBase}?code=${encodeURIComponent(t.username)}`;
-    const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=110x110&margin=0&data=${encodeURIComponent(connectUrl)}`;
     return `<div class="p-ticket">
-      <div class="p-head"><span class="p-name">${t.profileName}</span><span class="p-price">${fmtMoney(t.price)}</span></div>
-      <div class="p-body">
-        <div class="p-code-col">
-          <div class="p-code">${t.username}</div>
-          ${t.password!==t.username?`<div class="p-pass">${t.password}</div>`:''}
-          ${parts.length ? `<div class="p-pills">${parts.map(p=>`<span class="p-pill">${p}</span>`).join('')}</div>` : ''}
-        </div>
-        <img class="p-qr" src="${qrSrc}" alt="QR" />
-      </div>
-      <div class="p-scan-hint">📱 Scanner pour se connecter</div>
+      <div class="p-head">${t.profileName} ${Math.round(t.price)} F</div>
+      <div class="p-code">${t.username}</div>
+      ${t.password!==t.username?`<div class="p-pass">${t.password}</div>`:''}
+      ${parts.length ? `<div class="p-pills">${parts.map(p=>`<span class="p-pill">${p}</span>`).join('')}</div>` : ''}
     </div>`;
   }).join('')}</div>`;
   window.print();
@@ -817,17 +841,17 @@ function attachShellEvents(){
     localStorage.removeItem('sidticket_token'); TOKEN=null; STATE=null; VIEW='landing'; render();
   });
   const upgradeBtn = document.getElementById('upgrade-btn');
-  if(upgradeBtn) upgradeBtn.addEventListener('click', ()=>{
-    const msg = STATE.upgradeMessage || "Contactez-nous pour passer au plan supérieur.";
-    const contact = STATE.upgradeContact;
-    alert(msg + (contact ? `\n\nContact : ${contact}` : ''));
-  });
+  if(upgradeBtn) upgradeBtn.addEventListener('click', ()=>{ CUR_VIEW='upgrade'; render(); });
   if(CUR_VIEW==='dashboard'){
     document.getElementById('sync-btn').addEventListener('click', async ()=>{
       const r = await api('/api/tickets/sync', 'POST', {});
       if(r.ok){ toast(`Synchronisé (${r.data.changed} mise(s) à jour).`); await refreshState(); render(); }
       else toast(r.data.message || 'Erreur de synchronisation', 'error');
     });
+  }
+  if(CUR_VIEW==='upgrade'){
+    attachPaymentPanelEvents();
+    document.getElementById('back-from-upgrade').addEventListener('click', ()=>{ CUR_VIEW='dashboard'; render(); });
   }
   if(CUR_VIEW==='profiles') attachProfilesEvents();
   if(CUR_VIEW==='tickets') attachTicketsEvents();
@@ -1000,6 +1024,9 @@ function attachSettingsEvents(){
     await api('/api/auth/logout', 'POST', {});
     localStorage.removeItem('sidticket_token'); TOKEN=null; STATE=null; VIEW='landing'; render();
   });
+  attachPaymentPanelEvents();
+}
+function attachPaymentPanelEvents(){
   let selectedDuration = null;
   document.querySelectorAll('.duration-pick-btn').forEach(b=>b.addEventListener('click', ()=>{
     selectedDuration = b.dataset.duration;
@@ -1219,12 +1246,14 @@ function renderAdminClients(){
   return `<div class="page-header"><div><div class="eyebrow">Comptes</div><h1>Tous les clients</h1><p>${adminState.length} compte(s) inscrit(s) — cliquez une ligne pour voir le détail</p></div></div>
   <div class="panel">
     ${adminState.length===0 ? '<div class="empty-state">Aucun compte pour le moment.</div>' : `
-    <table><thead><tr><th>Boutique</th><th>Email</th><th>Plan</th><th>Essai jusqu'au</th><th>Statut</th><th>Profils</th><th></th></tr></thead>
+    <table><thead><tr><th>Boutique</th><th>Email</th><th>Plan</th><th>Abonnement choisi</th><th>Essai jusqu'au</th><th>Statut</th><th>Profils</th><th></th></tr></thead>
     <tbody>${adminState.map(t=>{
       const d = daysLeft(t.trialEndsAt);
       const statusBadge = !t.active ? '<span class="badge badge-exp">Désactivé</span>' : d<=0 ? '<span class="badge badge-exp">Essai terminé</span>' : d<=3 ? '<span class="badge badge-lock">Bientôt</span>' : '<span class="badge badge-dispo">Actif</span>';
       return `<tr>
-        <td data-detail="${t.id}" style="cursor:pointer;">${t.businessName}</td><td data-detail="${t.id}" style="cursor:pointer;">${t.email}</td><td style="text-transform:capitalize;">${t.plan}</td><td>${fmtDate(t.trialEndsAt)}</td>
+        <td data-detail="${t.id}" style="cursor:pointer;">${t.businessName}</td><td data-detail="${t.id}" style="cursor:pointer;">${t.email}</td><td style="text-transform:capitalize;">${t.plan}</td>
+        <td>${t.lastSubscriptionDuration ? durationLabel(t.lastSubscriptionDuration) : '—'}</td>
+        <td>${fmtDate(t.trialEndsAt)}</td>
         <td>${statusBadge}</td><td>${t.profilesCount}${t.maxProfiles?'/'+t.maxProfiles:''}</td>
         <td style="display:flex; gap:6px; flex-wrap:wrap;">
           <button class="btn btn-ghost btn-sm" data-license="${t.id}" data-plan="${t.plan}">Licence</button>
@@ -1247,6 +1276,7 @@ function renderAdminDetailModal(){
       <div class="ticket-result">
         <div class="row"><span>Lien portail</span><span class="mono">/portal/${t.slug}</span></div>
         <div class="row"><span>Plan</span><span style="text-transform:capitalize;">${t.plan}</span></div>
+        <div class="row"><span>Abonnement choisi</span><span>${t.lastSubscriptionDuration ? durationLabel(t.lastSubscriptionDuration) : 'Aucun (essai gratuit)'}</span></div>
         <div class="row"><span>Inscrit le</span><span>${fmtDate(d.createdAt)}</span></div>
         <div class="row"><span>Essai jusqu'au</span><span>${fmtDate(t.trialEndsAt)}</span></div>
         <div class="row"><span>Statut</span><span>${t.active?'Actif':'Désactivé'}</span></div>

@@ -172,6 +172,7 @@ function publicTenant(t) {
     id: t.id, slug: t.slug, email: t.email, businessName: t.businessName, phone: t.phone,
     plan: t.plan, portalTheme: t.portalTheme || 'signal', trialEndsAt: t.trialEndsAt, active: t.active,
     maxProfiles: t.maxProfiles, maxRouters: t.maxRouters, features: t.features,
+    lastSubscriptionDuration: t.lastSubscriptionDuration || null, lastSubscriptionAt: t.lastSubscriptionAt || null,
   };
 }
 
@@ -566,6 +567,8 @@ app.post('/api/admin/payment-requests/:id/validate', requireAdmin, (req, res) =>
   if (!tenant) return res.status(404).json({ message: 'Compte client introuvable.' });
   tenant.trialEndsAt = Math.max(tenant.trialEndsAt, Date.now()) + request.durationDays * 86400000;
   tenant.active = true;
+  tenant.lastSubscriptionDuration = request.durationDays;
+  tenant.lastSubscriptionAt = Date.now();
   request.status = 'validated';
   request.validatedAt = Date.now();
   db.save(DATA);
@@ -628,7 +631,7 @@ app.post('/api/admin/tenants/:id', requireAdmin, (req, res) => {
   if (plan) tenant.plan = plan === 'pro' ? 'pro' : 'basique';
   if (active !== undefined) tenant.active = !!active;
   if (extendDays) tenant.trialEndsAt = Math.max(tenant.trialEndsAt, Date.now()) + parseInt(extendDays, 10) * 86400000;
-  if (setDays) tenant.trialEndsAt = Date.now() + parseInt(setDays, 10) * 86400000; // "générer une licence" de X jours à partir d'aujourd'hui
+  if (setDays) { tenant.trialEndsAt = Date.now() + parseInt(setDays, 10) * 86400000; tenant.lastSubscriptionDuration = parseInt(setDays, 10); tenant.lastSubscriptionAt = Date.now(); }
   if (maxRouters !== undefined) tenant.maxRouters = parseInt(maxRouters, 10) || 1;
   if (maxProfiles !== undefined) tenant.maxProfiles = parseInt(maxProfiles, 10) || 0;
   if (features) tenant.features = { remoteAccess: !!features.remoteAccess, macLock: features.macLock !== false };
