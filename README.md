@@ -58,6 +58,18 @@ Il y a deux scénarios bien différents, à ne pas confondre :
 
 Nécessite `cloudflared` installé sur le serveur qui héberge l'application. Sur un hébergeur comme Render, cette fonctionnalité n'est généralement pas utilisable telle quelle (pas d'accès pour installer des binaires système) — elle est surtout pertinente pour une installation auto-hébergée sur un PC/Raspberry Pi.
 
+## ⚠️ Important : vos données disparaissent après chaque mise à jour ?
+
+Sur le plan gratuit de Render, le disque est **remis à zéro à chaque déploiement** — c'est pourquoi vos clients, profils et tickets disparaissent après une mise à jour du code. Ce n'est pas un bug de l'application, c'est une limite du plan gratuit.
+
+**Pour corriger ça définitivement :**
+1. Passez au plan payant Render (Starter, 7$/mois minimum)
+2. Dans les paramètres de votre service Render, ajoutez un **"Persistent Disk"** (quelques dollars/mois selon la taille, 1 Go suffit largement)
+3. Montez-le par exemple sur `/var/data`
+4. Ajoutez une variable d'environnement sur Render : `DATA_DIR` = `/var/data`
+
+L'application est déjà prête pour ça (elle lit `DATA_DIR` automatiquement) — aucune autre modification de code nécessaire.
+
 ## Limites connues
 
 - Les sessions de connexion sont gardées en mémoire côté serveur : elles sont perdues si le serveur redémarre (ex: sur le plan gratuit Render qui met le service en veille après inactivité). Les utilisateurs devront alors se reconnecter.

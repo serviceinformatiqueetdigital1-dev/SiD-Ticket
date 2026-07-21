@@ -411,8 +411,11 @@ function renderInfoBar(){
   const firstName = t.email.split('@')[0].replace(/[._-]/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
   const connected = STATE.config.router.host && STATE.config.router.connected;
   const lastSync = STATE.config.lastSyncAt ? fmtDate(STATE.config.lastSyncAt) : 'Jamais';
+  const planLabel = t.lastSubscriptionDuration ? `Plan ${t.plan} (${durationLabel(t.lastSubscriptionDuration)})` : `Essai gratuit (${daysLeft(t.trialEndsAt)}j restants)`;
   return `<div class="info-bar">
     <span class="info-item"><strong>Bienvenue ${firstName} 👋</strong></span>
+    <span class="info-sep">·</span>
+    <span class="info-item">⚡ ${planLabel}</span>
     <span class="info-sep">·</span>
     <span class="info-item">Routeur : ${STATE.config.router.host ? (connected ? 'Connecté ✅' : 'Non connecté ⚠️') : 'Non configuré'}</span>
     <span class="info-sep">·</span>
@@ -442,7 +445,6 @@ function renderUpgradePage(){
       <h3>Pro ${t.plan==='pro'?'· Votre plan actuel':''} <span class="badge badge-dispo">Recommandé</span></h3>
       <ul style="padding-left:18px; font-size:13.5px; color:var(--text-dim); line-height:1.9;">
         <li>Tout ce qui est inclus dans Basique</li>
-        <li><strong style="color:var(--text);">Mode accès distant</strong> — gérez votre boutique de partout</li>
         <li><strong style="color:var(--text);">Verrouillage MAC</strong> renforcé sur vos profils</li>
         <li>Limite de profils augmentée ou illimitée</li>
         <li>Support prioritaire</li>
@@ -680,6 +682,7 @@ function printTickets(list){
   area.innerHTML = `<div class="p-grid">${list.map(t=>{
     const parts = [fmtDurationCompact(t.activeTimeMs), fmtBytesCompact(t.dataLimitBytes)].filter(Boolean);
     return `<div class="p-ticket">
+      <div class="p-biz">${STATE.config.businessName}</div>
       <div class="p-head">${t.profileName} ${Math.round(t.price)} F</div>
       <div class="p-code">${t.username}</div>
       ${t.password!==t.username?`<div class="p-pass">${t.password}</div>`:''}
@@ -786,7 +789,6 @@ function renderHistory(){
 
 function renderSettings(){
   const t = STATE.tenant;
-  const hasRemoteAccess = t.features && t.features.remoteAccess;
   return `<div class="page-header"><div><div class="eyebrow">Configuration</div><h1>Paramètres</h1><p>Identité, sécurité et abonnement</p></div></div>
   <div class="settings-grid">
     <div class="panel"><h3>Nom de la boutique</h3><div class="field"><input id="biz-name" value="${STATE.config.businessName}" /></div><button class="btn btn-primary" id="save-biz" style="width:auto;">Enregistrer</button></div>
@@ -798,16 +800,11 @@ function renderSettings(){
   </div>
   <div class="panel" style="margin-top:22px;"><h3>Votre abonnement</h3>
     <p style="font-size:13.5px; color:var(--text-dim);">Email : <strong style="color:var(--text);">${t.email}</strong> · Plan <strong style="color:var(--text); text-transform:capitalize;">${t.plan}</strong> · Actif jusqu'au ${new Date(t.trialEndsAt).toLocaleDateString('fr-FR')}</p>
+    <p style="font-size:13.5px; color:var(--text-dim); margin-top:6px;">${t.lastSubscriptionDuration ? `Dernier abonnement acheté : <strong style="color:var(--signal);">${durationLabel(t.lastSubscriptionDuration)}</strong>${t.lastSubscriptionAt ? ' le ' + fmtDate(t.lastSubscriptionAt) : ''}` : `Vous êtes actuellement en <strong style="color:var(--text);">essai gratuit</strong> — aucun abonnement acheté pour le moment.`}</p>
     <p style="font-size:13px; color:var(--text-dim); margin-top:8px;">Profils autorisés : <strong style="color:var(--text);">${t.maxProfiles ? t.maxProfiles : 'Illimité'}</strong> (${STATE.profiles.length} utilisé(s))</p>
     <button class="btn btn-ghost btn-sm" id="mobile-logout-btn" style="width:auto; margin-top:12px;">Déconnexion</button>
   </div>
-  ${renderPaymentPanel()}
-  <div class="panel" style="margin-top:22px;">
-    <h3>Mode accès distant</h3>
-    ${!hasRemoteAccess ? `<div class="error-msg">Non disponible sur votre compte. Contactez-nous pour l'activer.</div>` : `
-    <p class="hint" style="margin-top:0; margin-bottom:14px;">Nécessite <span class="mono">cloudflared</span> installé sur le serveur.</p>
-    <button class="btn btn-primary" id="start-remote" style="width:auto;">Activer l'accès distant</button>`}
-  </div>`;
+  ${renderPaymentPanel()}`;
 }
 function renderPaymentPanel(){
   const prices = STATE.subscriptionPrices || {};
@@ -1012,12 +1009,6 @@ function attachSettingsEvents(){
     const current = document.getElementById('pw-current').value, next = document.getElementById('pw-new').value;
     const r = await api('/api/change-password', 'POST', { current, next });
     if(r.ok) toast('Mot de passe mis à jour.'); else toast(r.data.message || 'Erreur', 'error');
-  });
-  const startBtn = document.getElementById('start-remote');
-  if(startBtn) startBtn.addEventListener('click', async ()=>{
-    toast('Connexion en cours…');
-    const r = await api('/api/remote-access/start', 'POST', {});
-    if(r.ok) toast('Accès distant activé : ' + r.data.url); else toast(r.data.message || 'Erreur', 'error');
   });
   const mobileLogout = document.getElementById('mobile-logout-btn');
   if(mobileLogout) mobileLogout.addEventListener('click', async ()=>{
