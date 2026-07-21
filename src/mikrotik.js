@@ -70,6 +70,39 @@ async function upsertHotspotProfile(routerConfig, profile) {
 }
 
 // Crée un utilisateur Hotspot correspondant à un ticket, rattaché à son profil.
+// Crée PLUSIEURS utilisateurs Hotspot en une seule connexion (beaucoup plus rapide
+// que d'ouvrir/fermer une connexion pour chaque ticket un par un — essentiel pour
+// les gros lots, ex: générer 500 tickets d'un coup).
+async function createHotspotUsersBatch(routerConfig, tickets) {
+  const conn = client(routerConfig);
+  const results = [];
+  try {
+    await conn.connect();
+    for (const ticket of tickets) {
+      try {
+        const params = [
+          '=name=' + ticket.username,
+          '=password=' + ticket.password,
+        ];
+        if (ticket.activeTimeMs) params.push('=limit-uptime=' + msToDuration(ticket.activeTimeMs));
+        if (ticket.dataLimitBytes) params.push('=limit-bytes-total=' + ticket.dataLimitBytes);
+        if (ticket.validityMs) params.push('=validity=' + msToDuration(ticket.validityMs));
+        if (ticket.routerProfile) params.push('=profile=' + ticket.routerProfile);
+        await conn.write('/ip/hotspot/user/add', params);
+        results.push({ username: ticket.username, ok: true });
+      } catch (e) {
+        results.push({ username: ticket.username, ok: false, error: e.message || String(e) });
+      }
+    }
+    await conn.close();
+    return { ok: true, results };
+  } catch (e) {
+    try { await conn.close(); } catch (_) {}
+    // Connexion impossible dès le départ : tous les tickets du lot échouent pareil.
+    return { ok: false, error: e.message || String(e), results: tickets.map(t => ({ username: t.username, ok: false, error: e.message || String(e) })) };
+  }
+}
+
 async function createHotspotUser(routerConfig, ticket) {
   const conn = client(routerConfig);
   try {
@@ -199,4 +232,4 @@ async function getRouterStatus(routerConfig) {
   }
 }
 
-module.exports = { testConnection, getRouterStatus, upsertHotspotProfile, createHotspotUser, fetchUsersStatus, lockUserToMac, removeHotspotUser };
+module.exports = { testConnection, getRouterStatus, upsertHotspotProfile, createHotspotUser, createHotspotUsersBatch, fetchUsersStatus, lockUserToMac, removeHotspotUser };

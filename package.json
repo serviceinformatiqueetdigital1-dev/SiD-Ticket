@@ -9,6 +9,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "node-routeros": "^1.6.9",
-    "nodemailer": "^6.9.14"
+    "nodemailer": "^6.9.14",
+    "ws": "^8.18.0"
   }
 }

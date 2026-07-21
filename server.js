@@ -6,6 +6,7 @@ const db = require('./src/db');
 const auth = require('./src/auth');
 const mailer = require('./src/mailer');
 const mikrotik = require('./src/mikrotik');
+const agentBridge = require('./src/agentBridge');
 
 process.on('uncaughtException', (err) => {
   console.error('Erreur inattendue (le serveur continue de fonctionner) :', err.message);
@@ -25,6 +26,24 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 let DATA = db.load();
 const TRIAL_DAYS = 14;
+
+// Envoie une action au routeur : via l'agent local si connecté (fonctionne même derrière
+// un CGNAT/Starlink), sinon en tentant une connexion directe (ne marche que si le routeur
+// a une IP publique joignable).
+async function routerAction(req, action, payload) {
+  if (agentBridge.isConnected(req.tenant.id)) {
+    return agentBridge.sendCommand(req.tenant.id, action, payload);
+  }
+  switch (action) {
+    case 'testConnection': return mikrotik.testConnection(req.td.config.router);
+    case 'getRouterStatus': return mikrotik.getRouterStatus(req.td.config.router);
+    case 'upsertHotspotProfile': return mikrotik.upsertHotspotProfile(req.td.config.router, payload.profile);
+    case 'createHotspotUsersBatch': return mikrotik.createHotspotUsersBatch(req.td.config.router, payload.tickets);
+    case 'fetchUsersStatus': return mikrotik.fetchUsersStatus(req.td.config.router);
+    case 'lockUserToMac': return mikrotik.lockUserToMac(req.td.config.router, payload.username, payload.mac);
+    default: return { ok: false, error: 'Action inconnue.' };
+  }
+}
 
 if (!DATA.adminSecretHash) {
   DATA.adminSecretHash = auth.hashPassword('admin1234'); // à changer immédiatement en production
@@ -105,6 +124,7 @@ app.post('/api/auth/signup', (req, res) => {
     maxProfiles: 0,
     maxRouters: 1,
     features: { remoteAccess: false, macLock: true },
+    agentToken: crypto.randomBytes(20).toString('hex'),
     createdAt: now,
   };
   DATA.tenants.push(tenant);
@@ -197,6 +217,8 @@ app.get('/api/state', requireAuth, (req, res) => {
     paymentName: DATA.paymentName,
     subscriptionPrices: DATA.subscriptionPrices,
     myPaymentRequests: DATA.paymentRequests.filter(p => p.tenantId === req.tenant.id).sort((a, b) => b.createdAt - a.createdAt),
+    agentToken: req.tenant.agentToken,
+    agentConnected: agentBridge.isConnected(req.tenant.id),
     config: {
       businessName: req.tenant.businessName,
       lastSyncAt: td.config.lastSyncAt || null,
@@ -205,6 +227,12 @@ app.get('/api/state', requireAuth, (req, res) => {
     profiles: td.profiles,
     tickets: td.tickets,
   });
+});
+
+app.post('/api/config/agent-token/regenerate', requireAuth, (req, res) => {
+  req.tenant.agentToken = crypto.randomBytes(20).toString('hex');
+  db.save(DATA);
+  res.json({ ok: true, agentToken: req.tenant.agentToken });
 });
 
 app.post('/api/payment-requests', requireAuth, (req, res) => {
@@ -265,15 +293,15 @@ app.post('/api/config/router/print-settings', requireAuth, async (req, res) => {
 });
 
 app.post('/api/config/router/test', requireAuth, async (req, res) => {
-  const result = await mikrotik.testConnection(req.td.config.router);
+  const result = await routerAction(req, 'testConnection', {});
   req.td.config.router.connected = !!result.ok;
   db.save(DATA);
   res.json(result);
 });
 
 app.get('/api/config/router/status', requireAuth, async (req, res) => {
-  if (!req.td.config.router.host) return res.status(400).json({ ok: false, message: 'Aucun routeur configuré.' });
-  const result = await mikrotik.getRouterStatus(req.td.config.router);
+  if (!req.td.config.router.host && !agentBridge.isConnected(req.tenant.id)) return res.status(400).json({ ok: false, message: 'Aucun routeur configuré.' });
+  const result = await routerAction(req, 'getRouterStatus', {});
   req.td.config.router.connected = !!result.ok;
   db.save(DATA);
   res.json(result);
@@ -312,8 +340,8 @@ app.post('/api/profiles', requireAuth, requireActiveSubscription, async (req, re
     createdAt: Date.now(),
   };
 
-  if (req.td.config.router.host) {
-    const result = await mikrotik.upsertHotspotProfile(req.td.config.router, profile);
+  if (req.td.config.router.host || agentBridge.isConnected(req.tenant.id)) {
+    const result = await routerAction(req, 'upsertHotspotProfile', { profile });
     profile.routerSynced = result.ok;
     if (!result.ok) profile.routerError = result.error;
   }
@@ -356,8 +384,8 @@ app.post('/api/profiles/:id/update', requireAuth, async (req, res) => {
     lockByMac: !!lockByMac,
   });
 
-  if (req.td.config.router.host) {
-    const result = await mikrotik.upsertHotspotProfile(req.td.config.router, profile);
+  if (req.td.config.router.host || agentBridge.isConnected(req.tenant.id)) {
+    const result = await routerAction(req, 'upsertHotspotProfile', { profile });
     profile.routerSynced = result.ok;
     if (!result.ok) profile.routerError = result.error;
   }
@@ -374,13 +402,14 @@ function genCredential(charType, length) {
   else chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
-function genUniqueCredentials(td, profile) {
+function genUniqueCredentials(existingUsernames, profile) {
   let username, password, tries = 0;
   do {
     username = (profile.prefix || '') + genCredential(profile.usernameCharType, profile.credentialLength);
     password = profile.credentialMode === 'user_pass' ? genCredential(profile.passwordCharType, profile.credentialLength) : username;
     tries++;
-  } while (td.tickets.some(t => t.username === username) && tries < 50);
+  } while (existingUsernames.has(username) && tries < 50);
+  existingUsernames.add(username);
   return { username, password };
 }
 
@@ -390,36 +419,46 @@ app.post('/api/tickets/generate', requireAuth, requireActiveSubscription, async 
   if (!profile) return res.status(400).json({ message: 'Profil introuvable. Créez-en un dans "Profils".' });
 
   const n = Math.max(1, Math.min(500, parseInt(qty, 10) || 1));
-  const created = [];
-  const routerErrors = [];
+  const price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' ? Math.max(0, parseFloat(priceOverride) || 0) : profile.price;
 
+  // 1. On génère d'abord tous les tickets en mémoire (rapide, pas d'accès réseau ici).
+  const existingUsernames = new Set(req.td.tickets.map(t => t.username));
+  const newTickets = [];
   for (let i = 0; i < n; i++) {
-    const { username, password } = genUniqueCredentials(req.td, profile);
-    const ticket = {
+    const { username, password } = genUniqueCredentials(existingUsernames, profile);
+    newTickets.push({
       username, password, code: username,
       profileId: profile.id, profileName: profile.name,
-      price: priceOverride !== undefined && priceOverride !== null && priceOverride !== '' ? Math.max(0, parseFloat(priceOverride) || 0) : profile.price,
+      price,
       activeTimeMs: profile.activeTimeMs, dataLimitBytes: profile.dataLimitBytes, validityMs: profile.validityMs,
       routerProfile: profile.name, lockByMac: profile.lockByMac, macLocked: false,
       status: 'disponible', routerSynced: false, createdAt: Date.now(), activatedAt: null,
-    };
-
-    if (req.td.config.router.host) {
-      const result = await mikrotik.createHotspotUser(req.td.config.router, ticket);
-      if (result.ok) ticket.routerSynced = true;
-      else routerErrors.push(`${ticket.username}: ${result.error}`);
-    }
-
-    req.td.tickets.push(ticket);
-    created.push(ticket);
+    });
   }
+
+  // 2. Puis on les envoie TOUS d'un coup au routeur, en une seule connexion
+  //    (beaucoup plus rapide que se reconnecter pour chaque ticket individuellement).
+  const routerErrors = [];
+  if (req.td.config.router.host || agentBridge.isConnected(req.tenant.id)) {
+    const batchResult = await routerAction(req, 'createHotspotUsersBatch', { tickets: newTickets });
+    req.td.config.router.connected = !!batchResult.ok;
+    const byUsername = {};
+    (batchResult.results || []).forEach(r => { byUsername[r.username] = r; });
+    for (const ticket of newTickets) {
+      const r = byUsername[ticket.username];
+      if (r && r.ok) ticket.routerSynced = true;
+      else if (r) routerErrors.push(`${ticket.username}: ${r.error}`);
+    }
+  }
+
+  req.td.tickets.push(...newTickets);
   db.save(DATA);
-  res.json({ ok: true, created: created.length, routerErrors });
+  res.json({ ok: true, created: newTickets.length, routerErrors: routerErrors.slice(0, 5) });
 });
 
 app.post('/api/tickets/sync', requireAuth, requireActiveSubscription, async (req, res) => {
-  if (!req.td.config.router.host) return res.status(400).json({ ok: false, message: 'Aucun routeur configuré.' });
-  const result = await mikrotik.fetchUsersStatus(req.td.config.router);
+  if (!req.td.config.router.host && !agentBridge.isConnected(req.tenant.id)) return res.status(400).json({ ok: false, message: 'Aucun routeur configuré.' });
+  const result = await routerAction(req, 'fetchUsersStatus', {});
   req.td.config.router.connected = !!result.ok;
   if (!result.ok) { db.save(DATA); return res.status(502).json({ ok: false, message: result.error }); }
 
@@ -433,7 +472,7 @@ app.post('/api/tickets/sync', requireAuth, requireActiveSubscription, async (req
     if (t.lockByMac && !t.macLocked) {
       const activeSession = result.activeByUser[t.username];
       if (activeSession && activeSession.macAddress) {
-        const lockResult = await mikrotik.lockUserToMac(req.td.config.router, t.username, activeSession.macAddress);
+        const lockResult = await routerAction(req, 'lockUserToMac', { username: t.username, mac: activeSession.macAddress });
         if (lockResult.ok) { t.macLocked = true; changed++; }
       }
     }
@@ -652,6 +691,7 @@ app.get(/^(?!\/api\/).*/, (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`SID Ticket démarré : http://localhost:${PORT}`);
 });
+agentBridge.attach(server, db, DATA);

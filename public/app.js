@@ -1,3 +1,9 @@
+// Enregistre le service worker pour rendre l'application installable
+// (icône sur l'écran d'accueil Android, application Windows via Edge/Chrome).
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{ navigator.serviceWorker.register('/sw.js').catch(()=>{}); });
+}
+
 function signalMark(color){
   color = color || 'var(--signal)';
   return `<div class="signal-mark"><svg viewBox="0 0 44 44" fill="none">
@@ -409,7 +415,7 @@ let CUR_VIEW = 'dashboard';
 function renderInfoBar(){
   const t = STATE.tenant;
   const firstName = t.email.split('@')[0].replace(/[._-]/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
-  const connected = STATE.config.router.host && STATE.config.router.connected;
+  const connected = (STATE.config.router.host && STATE.config.router.connected) || STATE.agentConnected;
   const lastSync = STATE.config.lastSyncAt ? fmtDate(STATE.config.lastSyncAt) : 'Jamais';
   const planLabel = t.lastSubscriptionDuration ? `Plan ${t.plan} (${durationLabel(t.lastSubscriptionDuration)})` : `Essai gratuit (${daysLeft(t.trialEndsAt)}j restants)`;
   return `<div class="info-bar">
@@ -417,7 +423,7 @@ function renderInfoBar(){
     <span class="info-sep">·</span>
     <span class="info-item">⚡ ${planLabel}</span>
     <span class="info-sep">·</span>
-    <span class="info-item">Routeur : ${STATE.config.router.host ? (connected ? 'Connecté ✅' : 'Non connecté ⚠️') : 'Non configuré'}</span>
+    <span class="info-item">Routeur : ${(STATE.config.router.host || STATE.agentConnected) ? (connected ? 'Connecté ✅' : 'Non connecté ⚠️') : 'Non configuré'}</span>
     <span class="info-sep">·</span>
     <span class="info-item">Zone : ${STATE.config.businessName}</span>
     <span class="info-sep">·</span>
@@ -664,6 +670,7 @@ function renderTickets(){
         </select>
         <input class="field" style="width:200px; margin:0;" id="ticket-search" placeholder="Rechercher un identifiant…" value="${ticketSearch}" />
         <button class="btn btn-ghost btn-sm" id="print-btn">Imprimer (${list.length})</button>
+        <button class="btn btn-ghost btn-sm" id="export-rsc-btn" title="Créer les comptes Hotspot sans agent ni connexion en direct">📄 Script MikroTik</button>
         ${unusedCount>0 ? `<button class="btn btn-danger btn-sm" id="delete-unused-btn">🗑 Supprimer les ${unusedCount} non utilisés</button>` : ''}
       </div>
     </div>
@@ -676,6 +683,38 @@ function renderTickets(){
     </tr>`).join('')}</tbody></table>`}
   </div>`;
 }
+// Génère un script MikroTik (.rsc) à importer manuellement dans WinBox — permet de créer
+// les comptes Hotspot sans connexion en direct entre SID Ticket et le routeur (utile si
+// vous ne voulez pas installer l'agent local, ex: pour un test ponctuel ou un client qui
+// préfère tout faire lui-même dans WinBox).
+function mikrotikDuration(ms){
+  if(!ms) return null;
+  const totalSec = Math.floor(ms/1000);
+  const h = Math.floor(totalSec/3600), m = Math.floor((totalSec%3600)/60), s = totalSec%60;
+  return `${h}h${m}m${s}s`;
+}
+function downloadMikrotikScript(list){
+  if(list.length===0){ toast('Aucun ticket à exporter.', 'error'); return; }
+  const lines = ['# Script SID Ticket — à importer dans WinBox', '# 1) Files -> glissez ce fichier sur le routeur', '# 2) New Terminal -> tapez : /import file-name=' + 'sidticket-export.rsc', ''];
+  list.forEach(t=>{
+    const parts = [`=name="${t.username}"`, `=password="${t.password}"`];
+    if(t.routerProfile) parts.push(`=profile="${t.routerProfile}"`);
+    const uptime = mikrotikDuration(t.activeTimeMs);
+    if(uptime) parts.push(`=limit-uptime=${uptime}`);
+    if(t.dataLimitBytes) parts.push(`=limit-bytes-total=${t.dataLimitBytes}`);
+    const validity = mikrotikDuration(t.validityMs);
+    if(validity) parts.push(`=validity=${validity}`);
+    lines.push(`/ip hotspot user add ${parts.join(' ')}`);
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'sidticket-export.rsc';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast(`Script généré pour ${list.length} ticket(s). Voir les instructions en haut du fichier.`);
+}
+
 function printTickets(list){
   if(list.length===0){ toast('Aucun ticket à imprimer.', 'error'); return; }
   const area = document.getElementById('print-area');
@@ -701,9 +740,20 @@ function renderRouter(){
   const r = STATE.config.router;
   const portalUrl = `${location.origin}/portal/${STATE.tenant.slug}`;
   return `<div class="page-header"><div><div class="eyebrow">Intégration</div><h1>📡 Hotspots</h1><p>Connexion à l'API Hotspot de votre routeur</p></div>
-    ${r.host ? `<button class="btn btn-ghost btn-sm" id="refresh-router-status">🔄 Actualiser l'état</button>` : ''}
+    ${(r.host || STATE.agentConnected) ? `<button class="btn btn-ghost btn-sm" id="refresh-router-status">🔄 Actualiser l'état</button>` : ''}
   </div>
-  ${r.host ? renderRouterStatusPanel() : ''}
+  <div class="panel">
+    <h3>🔌 Agent local <span class="badge ${STATE.agentConnected?'badge-dispo':'badge-exp'}">${STATE.agentConnected?'Connecté ✅':'Non connecté'}</span></h3>
+    <p class="hint" style="margin-top:0; margin-bottom:12px;">Si votre connexion internet bloque l'accès direct à votre routeur (Starlink, 4G/CGNAT...), installez le petit programme "agent" sur un PC connecté au même réseau que votre routeur. Il contourne le blocage en se connectant depuis chez vous vers SID Ticket.</p>
+    <div class="field"><label>Jeton agent (à coller dans le fichier config.json de l'agent)</label>
+      <div style="display:flex; gap:8px;">
+        <input class="mono" readonly value="${STATE.agentToken}" onclick="this.select()" style="flex:1; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:11px 13px; color:var(--text);" />
+        <button class="btn btn-ghost btn-sm" id="regen-agent-token">Régénérer</button>
+      </div>
+    </div>
+    <p class="hint">Instructions complètes fournies avec le dossier <span class="mono">sidticket-agent</span>.</p>
+  </div>
+  ${(r.host || STATE.agentConnected) ? renderRouterStatusPanel() : ''}
   <div class="panel">
     <h3>Portail de connexion WiFi</h3>
     <p class="hint" style="margin-top:0;">Donnez ce lien à vos clients (affiché automatiquement sur les tickets imprimés) : ils y saisissent leur code pour se connecter.</p>
@@ -854,7 +904,7 @@ function attachShellEvents(){
   if(CUR_VIEW==='tickets') attachTicketsEvents();
   if(CUR_VIEW==='router'){
     attachRouterEvents();
-    if(STATE.config.router.host && !routerStatus && !routerStatusLoading) loadRouterStatus();
+    if((STATE.config.router.host || STATE.agentConnected) && !routerStatus && !routerStatusLoading) loadRouterStatus();
   }
   if(CUR_VIEW==='history') document.querySelectorAll('[data-period]').forEach(b=>b.addEventListener('click', ()=>{ historyPeriod=b.dataset.period; render(); }));
   if(CUR_VIEW==='settings') attachSettingsEvents();
@@ -962,6 +1012,11 @@ function attachTicketsEvents(){
     const list = STATE.tickets.filter(t=> ticketFilter==='tous'?true:t.status===ticketFilter).filter(t=> ticketSearch?t.username.toLowerCase().includes(ticketSearch.toLowerCase()):true).sort((a,b)=>b.createdAt-a.createdAt);
     printTickets(list);
   });
+  const exportRscBtn = document.getElementById('export-rsc-btn');
+  if(exportRscBtn) exportRscBtn.addEventListener('click', ()=>{
+    const list = STATE.tickets.filter(t=> ticketFilter==='tous'?true:t.status===ticketFilter).filter(t=> ticketSearch?t.username.toLowerCase().includes(ticketSearch.toLowerCase()):true).sort((a,b)=>b.createdAt-a.createdAt);
+    downloadMikrotikScript(list);
+  });
 }
 async function loadRouterStatus(){
   routerStatusLoading = true; render();
@@ -973,6 +1028,12 @@ async function loadRouterStatus(){
 function attachRouterEvents(){
   const refreshBtn = document.getElementById('refresh-router-status');
   if(refreshBtn) refreshBtn.addEventListener('click', ()=>{ routerStatus=null; loadRouterStatus(); });
+  const regenBtn = document.getElementById('regen-agent-token');
+  if(regenBtn) regenBtn.addEventListener('click', async ()=>{
+    if(!confirm("Régénérer le jeton ? L'ancien cessera de fonctionner immédiatement — il faudra mettre à jour config.json sur l'agent.")) return;
+    const r = await api('/api/config/agent-token/regenerate', 'POST', {});
+    if(r.ok){ toast('Nouveau jeton généré.'); await refreshState(); render(); }
+  });
   const resetBtn = document.getElementById('reset-router');
   if(resetBtn) resetBtn.addEventListener('click', async ()=>{
     if(!confirm('Effacer la configuration du routeur (adresse, identifiants) ?')) return;
