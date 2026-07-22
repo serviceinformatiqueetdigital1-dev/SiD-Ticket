@@ -276,12 +276,14 @@ app.post('/api/config/router', requireAuth, async (req, res) => {
   const { host, user, password, port } = req.body;
   req.td.config.router = { ...req.td.config.router, host, user, password: password || req.td.config.router.password, port: port ? parseInt(port, 10) : 8728 };
   db.save(DATA);
+  agentBridge.pushRouterConfig(req.tenant.id, req.td.config.router);
   res.json({ ok: true });
 });
 
 app.post('/api/config/router/reset', requireAuth, (req, res) => {
   req.td.config.router = { host: '', user: 'admin', password: '', port: 8728, loginUrl: req.td.config.router.loginUrl, defaultProfile: req.td.config.router.defaultProfile };
   db.save(DATA);
+  agentBridge.pushRouterConfig(req.tenant.id, req.td.config.router);
   res.json({ ok: true });
 });
 

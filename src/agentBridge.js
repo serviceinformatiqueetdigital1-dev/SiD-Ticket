@@ -29,7 +29,14 @@ function attach(httpServer, dbModule, dataRef) {
         if (!tenant) { ws.send(JSON.stringify({ type: 'authError', message: 'Jeton invalide.' })); ws.close(); return; }
         authedTenantId = tenant.id;
         connections.set(tenant.id, ws);
-        ws.send(JSON.stringify({ type: 'authOk' }));
+        // On envoie à l'agent les infos du routeur déjà saisies dans SID Ticket
+        // (page Hotspots) — plus besoin de les dupliquer dans config.json.
+        const td = DATA.tenantData[tenant.id];
+        const router = td && td.config && td.config.router ? td.config.router : {};
+        ws.send(JSON.stringify({
+          type: 'authOk',
+          router: { host: router.host || '', user: router.user || 'admin', password: router.password || '', port: router.port || 8728 },
+        }));
         return;
       }
 
@@ -64,6 +71,14 @@ function isConnected(tenantId) {
   return connections.has(tenantId);
 }
 
+// Pousse la config routeur mise à jour vers l'agent déjà connecté (ex: après avoir changé
+// le mot de passe dans SID Ticket → Hotspots), sans avoir besoin de redémarrer l'agent.
+function pushRouterConfig(tenantId, router) {
+  const ws = connections.get(tenantId);
+  if (!ws) return;
+  ws.send(JSON.stringify({ type: 'routerConfig', router }));
+}
+
 function sendCommand(tenantId, action, payload, timeoutMs = 20000) {
   return new Promise((resolve) => {
     const ws = connections.get(tenantId);
@@ -80,4 +95,4 @@ function sendCommand(tenantId, action, payload, timeoutMs = 20000) {
   });
 }
 
-module.exports = { attach, isConnected, sendCommand };
+module.exports = { attach, isConnected, sendCommand, pushRouterConfig };
