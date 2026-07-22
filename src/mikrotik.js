@@ -86,7 +86,8 @@ async function createHotspotUsersBatch(routerConfig, tickets) {
         ];
         if (ticket.activeTimeMs) params.push('=limit-uptime=' + msToDuration(ticket.activeTimeMs));
         if (ticket.dataLimitBytes) params.push('=limit-bytes-total=' + ticket.dataLimitBytes);
-        if (ticket.validityMs) params.push('=validity=' + msToDuration(ticket.validityMs));
+        // 'validity' n'est pas accepté en paramètre API par toutes les versions de RouterOS
+        // (confirmé : "unknown parameter validity" sur RouterOS 7.23.2) — on ne l'envoie plus.
         if (ticket.routerProfile) params.push('=profile=' + ticket.routerProfile);
         await conn.write('/ip/hotspot/user/add', params);
         results.push({ username: ticket.username, ok: true });
@@ -114,7 +115,8 @@ async function createHotspotUser(routerConfig, ticket) {
     ];
     if (ticket.activeTimeMs) params.push('=limit-uptime=' + msToDuration(ticket.activeTimeMs));
     if (ticket.dataLimitBytes) params.push('=limit-bytes-total=' + ticket.dataLimitBytes);
-    if (ticket.validityMs) params.push('=validity=' + msToDuration(ticket.validityMs));
+        // 'validity' n'est pas accepté en paramètre API par toutes les versions de RouterOS
+        // (confirmé : "unknown parameter validity" sur RouterOS 7.23.2) — on ne l'envoie plus.
     if (ticket.routerProfile) params.push('=profile=' + ticket.routerProfile);
 
     await conn.write('/ip/hotspot/user/add', params);

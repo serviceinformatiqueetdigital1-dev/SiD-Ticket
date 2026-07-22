@@ -702,8 +702,7 @@ function downloadMikrotikScript(list){
     const uptime = mikrotikDuration(t.activeTimeMs);
     if(uptime) parts.push(`=limit-uptime=${uptime}`);
     if(t.dataLimitBytes) parts.push(`=limit-bytes-total=${t.dataLimitBytes}`);
-    const validity = mikrotikDuration(t.validityMs);
-    if(validity) parts.push(`=validity=${validity}`);
+    // 'validity' n'est pas accepté par toutes les versions de RouterOS, on ne l'exporte plus.
     lines.push(`/ip hotspot user add ${parts.join(' ')}`);
   });
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
