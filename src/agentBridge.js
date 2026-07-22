@@ -17,6 +17,8 @@ function attach(httpServer, dbModule, dataRef) {
 
   wss.on('connection', (ws) => {
     let authedTenantId = null;
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
 
     ws.on('message', (raw) => {
       let msg;
@@ -31,6 +33,8 @@ function attach(httpServer, dbModule, dataRef) {
         return;
       }
 
+      if (msg.type === 'ping') { ws.isAlive = true; ws.send(JSON.stringify({ type: 'pong' })); return; }
+
       if (msg.type === 'response' && msg.requestId && pending.has(msg.requestId)) {
         const p = pending.get(msg.requestId);
         clearTimeout(p.timer);
@@ -43,6 +47,17 @@ function attach(httpServer, dbModule, dataRef) {
       if (authedTenantId && connections.get(authedTenantId) === ws) connections.delete(authedTenantId);
     });
   });
+
+  // Filet de sécurité supplémentaire : ping natif WebSocket toutes les 25s pour garder
+  // la connexion active à travers les proxys d'hébergement (Render, etc.), et pour
+  // fermer proprement les connexions mortes qui n'auraient pas déclenché 'close'.
+  setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) { ws.terminate(); return; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (e) {}
+    });
+  }, 25000);
 }
 
 function isConnected(tenantId) {
